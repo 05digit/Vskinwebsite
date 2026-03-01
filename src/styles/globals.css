@@ -1,8 +1,5 @@
+@import "tailwindcss";
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
 
 :root {
   --color-cream: #FAF8F5;
@@ -646,5 +643,27 @@
     );
     background-size: 300% 300%;
     animation: gradient-pulse 18s ease-in-out infinite;
+  }
+
+  /* Mobile Hero Gradient with VERY subtle animation - keeps the gradient visible */
+  .mobile-hero-gradient {
+    background: linear-gradient(
+      to bottom right,
+      #B89968 0%,
+      #8B7355 50%,
+      #6A5540 100%
+    );
+    background-size: 110% 110%;
+    background-position: 0% 0%;
+    animation: gentle-gradient-shift 20s ease-in-out infinite;
+  }
+
+  @keyframes gentle-gradient-shift {
+    0%, 100% {
+      background-position: 0% 0%;
+    }
+    50% {
+      background-position: 10% 10%;
+    }
   }
 }

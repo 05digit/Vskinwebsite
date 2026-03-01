@@ -4,7 +4,7 @@ import { products } from '../data/products';
 import { useState } from 'react';
 import { ScrollReveal } from '../components/ScrollReveal';
 import { useCart } from '../context/CartContext';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 
 export function ProductPage() {
   const { productId } = useParams();

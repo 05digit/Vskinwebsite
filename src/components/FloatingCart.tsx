@@ -1,6 +1,6 @@
 import { ShoppingBag } from 'lucide-react';
 import { useCart } from '../context/CartContext';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 
 interface FloatingCartProps {
   onClick: () => void;

@@ -3,7 +3,8 @@ import { ArrowRight, CheckCircle } from 'lucide-react';
 import { products } from '../data/products';
 import { ScrollReveal } from '../components/ScrollReveal';
 import { ParallaxBackground } from '../components/ParallaxBackground';
-import treeBarkBg from 'figma:asset/05c742d14ee570e5c607da19f74f5e57affe1fce.png';
+
+const treeBarkBg = "https://images.unsplash.com/photo-1724070560533-8dc993465914?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixlib=rb-4.1.0&q=80&w=1080";
 
 export function HomePage() {
   const featuredProducts = products.filter(p => p.featured);
@@ -12,14 +13,10 @@ export function HomePage() {
     <div>
       {/* Hero Section */}
       <section className="relative min-h-screen md:min-h-0 flex items-center md:bg-gradient-cream md:texture-subtle md:gradient-overlay-warm ambient-gradient-pulse">
-        {/* Mobile Background Image with Parallax */}
-        <ParallaxBackground 
-          imageSrc={treeBarkBg} 
-          speed={0.5}
-          className="md:hidden"
-        />
-        {/* Mobile Overlay */}
-        <div className="absolute inset-0 bg-brown-dark/70 md:hidden" />
+        {/* Mobile Gradient Background */}
+        <div className="absolute inset-0 md:hidden mobile-hero-gradient" />
+        {/* Mobile Subtle Overlay for depth */}
+        <div className="absolute inset-0 md:hidden bg-gradient-to-b from-transparent via-brown-dark/10 to-brown-dark/30" />
         
         <div className="max-w-7xl mx-auto px-6 sm:px-6 lg:px-12 py-16 sm:py-24 md:py-32 w-full relative z-10">
           <div className="grid md:grid-cols-2 gap-12 items-center">

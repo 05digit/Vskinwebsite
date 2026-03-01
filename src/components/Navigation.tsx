@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router';
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import logoBlack from "figma:asset/eb1b823065c7209cd7e29aee6f33bbb5b174be44.png";
 
 export function Navigation() {
