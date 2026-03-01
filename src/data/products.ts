@@ -1,9 +1,9 @@
-// Import product images using figma:asset scheme
-import cleanserImg from "figma:asset/508bf40a2997bacc61b69a4343037f475da8fba9.png";
-import tonerImg from "figma:asset/faa3dba1cdbf138361554f818046d140fc86f94a.png";
-import moisturizerImg from "figma:asset/2497467ac160ad4c14c681f3cf60d5421672c58b.png";
-import pigmentSerumImg from "figma:asset/989420830a3619412b0dd036cb77977e419720a8.png";
-import collagenSerumImg from "figma:asset/7ee665250df403023d3439af0a8ce980aac5d5f9.png";
+// Product image URLs - Supabase Storage
+const cleanserImg = "https://bgsmbgofghygwbuevxpo.supabase.co/storage/v1/object/public/images/cleansing%20foam.jpg";
+const tonerImg = "https://bgsmbgofghygwbuevxpo.supabase.co/storage/v1/object/public/images/hydrating%20toner.jpg";
+const moisturizerImg = "https://bgsmbgofghygwbuevxpo.supabase.co/storage/v1/object/public/images/moisturising%20day%20cream.jpg";
+const pigmentSerumImg = "https://bgsmbgofghygwbuevxpo.supabase.co/storage/v1/object/public/images/pigment%20perfecting%20serum.jpg";
+const collagenSerumImg = "https://bgsmbgofghygwbuevxpo.supabase.co/storage/v1/object/public/images/collagen%20boost%20serum.jpg";
 
 export interface Product {
   id: string;

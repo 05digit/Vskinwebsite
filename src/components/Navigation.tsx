@@ -1,7 +1,9 @@
 import { Link, useLocation } from 'react-router';
+import { ShoppingCart, Menu, X } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import logoBlack from "figma:asset/eb1b823065c7209cd7e29aee6f33bbb5b174be44.png";
+
+const logoBlack = "https://bgsmbgofghygwbuevxpo.supabase.co/storage/v1/object/public/images/VSkin%20logo%20black.png";
 
 export function Navigation() {
   const location = useLocation();
