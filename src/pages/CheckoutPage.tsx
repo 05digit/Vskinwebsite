@@ -297,11 +297,10 @@ export function CheckoutPage() {
       }
 
       if (paymentIntent.status === 'succeeded') {
-        const orderData = await saveOrder(paymentIntent.id, 'stripe');
+        // Webhook will handle order creation and email sending
         toast.success('Payment successful!');
-        // Use the server-generated order ID for consistency
-        const orderNumber = orderData?.orderId || paymentIntent.id;
-        navigate(`/order-success?orderId=${orderNumber}`);
+        clearCart();
+        navigate(`/order-success?orderId=${paymentIntent.id}`);
       }
     } catch (error: any) {
       console.error('Stripe payment error:', error);
@@ -413,17 +412,19 @@ export function CheckoutPage() {
             throw new Error(captureData.error || 'Failed to capture PayPal payment');
           }
 
-          const orderData = await saveOrder(data.orderID, 'paypal');
-          toast.success('Payment successful!');
-          // Use the server-generated order ID for consistency
-          const orderNumber = orderData?.orderId || data.orderID;
-          navigate(`/order-success?orderId=${orderNumber}`);
+          // Webhook will handle order creation and email sending
+          // Clear cart and use window.location for reliable redirect with PayPal
+          clearCart();
+          window.location.href = `/order-success?orderId=${data.orderID}`;
         } catch (error: any) {
           console.error('PayPal capture error:', error);
           toast.error(error.message || 'Payment failed. Please try again.');
-        } finally {
           setIsProcessing(false);
         }
+      },
+      onCancel: () => {
+        // User cancelled the payment
+        toast.info('Payment cancelled');
       },
       onError: (error: any) => {
         const msg = error?.message || String(error);
@@ -442,94 +443,6 @@ export function CheckoutPage() {
         label: 'paypal',
       },
     }).render('#paypal-button-container');
-  };
-
-  const saveOrder = async (paymentId: string, method: PaymentMethod) => {
-    try {
-      const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/orders`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${publicAnonKey}`,
-          },
-          body: JSON.stringify({
-            paymentId,
-            paymentMethod: method,
-            customerInfo,
-            items,
-            totalPrice,
-            status: 'completed',
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        console.error('Failed to save order');
-      }
-
-      const orderData = await response.json();
-      
-      // Send order confirmation email
-      await sendOrderConfirmationEmail(orderData.orderId || paymentId);
-      return orderData;
-    } catch (error) {
-      console.error('Error saving order:', error);
-    }
-  };
-
-  const sendOrderConfirmationEmail = async (orderId: string) => {
-    try {
-      // Generate consistent order number from orderId
-      // For Stripe: payment intent ID (pi_xxx) -> extract last 8 chars
-      // For PayPal: order ID -> extract last 8 chars
-      const orderNumber = orderId.replace('pi_', '').slice(-8).toUpperCase();
-
-      const emailResponse = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/send-order-confirmation`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${publicAnonKey}`,
-          },
-          body: JSON.stringify({
-            orderNumber,
-            email: customerInfo.email,
-            customerName: `${customerInfo.firstName} ${customerInfo.lastName}`,
-            address: customerInfo.address || 'N/A',
-            city: customerInfo.city || 'N/A',
-            postalCode: customerInfo.postalCode || 'N/A',
-            country: customerInfo.country || 'Ireland',
-            items: items.map(item => ({
-              name: item.name,
-              quantity: item.quantity,
-              price: item.price * item.quantity,
-            })),
-            total: totalPrice,
-          }),
-        }
-      );
-
-      if (emailResponse.ok) {
-        const emailData = await emailResponse.json();
-        if (emailData.emailSkipped) {
-          console.log('ℹ️  Email sending skipped - domain verification required');
-        } else if (emailData.emailFailed) {
-          console.log('⚠️  Order confirmed but email failed to send');
-        } else {
-          console.log('✅ Order confirmation email sent successfully:', emailData.emailId);
-        }
-      } else {
-        const errorData = await emailResponse.json();
-        console.log('⚠️  Email sending failed:', errorData.error || 'Unknown error');
-        // Don't throw error - email failure shouldn't break the order flow
-      }
-    } catch (error) {
-      console.log('⚠️  Error with email service:', error);
-      // Don't throw error - email failure shouldn't break the order flow
-    }
   };
 
   if (items.length === 0) {

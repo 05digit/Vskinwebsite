@@ -3,23 +3,63 @@ import { Link, useSearchParams } from 'react-router';
 import { CheckCircle2, Package, Mail, ArrowRight } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useCart } from '../context/CartContext';
+import { projectId, publicAnonKey } from '../utils/supabase/info';
 
 export function OrderSuccessPage() {
   const [searchParams] = useSearchParams();
   const orderId = searchParams.get('orderId');
   const [showConfetti, setShowConfetti] = useState(true);
+  const [orderNumber, setOrderNumber] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
   const { clearCart } = useCart();
-
-  // Generate consistent order number from payment ID
-  // For Stripe: payment intent ID (pi_xxx) -> extract last 8 chars
-  // For PayPal: order ID -> extract last 8 chars
-  const orderNumber = orderId ? orderId.replace('pi_', '').slice(-8).toUpperCase() : 'N/A';
 
   useEffect(() => {
     // Clear the cart when landing on success page
     clearCart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
+
+  // Fetch the real order number from the webhook
+  useEffect(() => {
+    if (!orderId) {
+      setIsLoading(false);
+      return;
+    }
+
+    const fetchOrderNumber = async () => {
+      try {
+        const response = await fetch(
+          `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/order-number/${orderId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${publicAnonKey}`,
+            },
+          }
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+          setOrderNumber(data.orderNumber);
+          
+          // If webhook is still pending, poll again after a short delay
+          if (data.isWebhookPending) {
+            setTimeout(fetchOrderNumber, 2000);
+          }
+        } else {
+          // Fallback to derived order number if API fails
+          setOrderNumber(orderId.replace('pi_', '').slice(-8).toUpperCase());
+        }
+      } catch (error) {
+        console.error('Error fetching order number:', error);
+        // Fallback to derived order number
+        setOrderNumber(orderId.replace('pi_', '').slice(-8).toUpperCase());
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchOrderNumber();
+  }, [orderId]);
 
   useEffect(() => {
     // Hide confetti after animation

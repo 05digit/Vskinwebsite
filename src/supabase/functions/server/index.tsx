@@ -467,6 +467,28 @@ app.get("/make-server-af749b27/orders/:orderId", async (c) => {
   }
 });
 
+// Get order number by payment ID (Stripe payment intent ID or PayPal order ID)
+app.get("/make-server-af749b27/order-number/:paymentId", async (c) => {
+  try {
+    const paymentId = c.req.param("paymentId");
+    const orderNumber = await kv.get(`order_number:${paymentId}`);
+
+    if (!orderNumber) {
+      console.log(`Order number not found for payment ID: ${paymentId}`);
+      // Return a fallback order number derived from payment ID for display
+      // This handles the case where the webhook hasn't processed yet
+      const fallback = paymentId.replace('pi_', '').slice(-8).toUpperCase();
+      return c.json({ orderNumber: fallback, isWebhookPending: true });
+    }
+
+    console.log(`Order number retrieved: ${orderNumber} for payment ${paymentId}`);
+    return c.json({ orderNumber: orderNumber as string, isWebhookPending: false });
+  } catch (error: any) {
+    console.log(`Error retrieving order number: ${error.message}`);
+    return c.json({ error: "Failed to retrieve order number" }, 500);
+  }
+});
+
 // ============================================
 // EMAIL SENDING ROUTE - ORDER CONFIRMATION
 // ============================================
@@ -669,6 +691,9 @@ app.post("/make-server-af749b27/webhooks/stripe", async (c) => {
       // Clean up cart data from KV store
       await kv.del(cartDataKey);
       
+      // Store the order number in KV so frontend can retrieve it
+      await kv.set(`order_number:${paymentIntent.id}`, result.order.order_number);
+      
       return c.json({ 
         received: true, 
         orderNumber: result.order.order_number,
@@ -795,6 +820,9 @@ app.post("/make-server-af749b27/webhooks/paypal", async (c) => {
       
       // Clean up cart data from KV store
       await kv.del(cartDataKey);
+      
+      // Store the order number in KV so frontend can retrieve it
+      await kv.set(`order_number:${orderId}`, result.order.order_number);
       
       return c.json({ 
         received: true, 
