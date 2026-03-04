@@ -3,6 +3,8 @@ import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
 import * as kv from "./kv_store.tsx";
 import { generateOrderConfirmationEmail } from "./email-template.tsx";
+import { createClient } from "npm:@supabase/supabase-js@2";
+
 const app = new Hono();
 
 // Enable logger
@@ -39,6 +41,127 @@ async function getConfigValue(envKey: string, kvKey: string): Promise<string | u
   const envValue = Deno.env.get(envKey);
   if (envValue) return envValue;
   return undefined;
+}
+
+// ============================================
+// HELPER: Get Supabase client for database operations
+// ============================================
+function getSupabaseClient() {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error("Supabase credentials not configured");
+  }
+  
+  return createClient(supabaseUrl, supabaseServiceKey);
+}
+
+// ============================================
+// HELPER: Generate order number in VSkin format
+// ============================================
+function generateOrderNumber(): string {
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 8).toUpperCase();
+  return `${timestamp.substring(0, 1)}_${random}`;
+}
+
+// ============================================
+// HELPER: Save order to Postgres and send confirmation email
+// This is the atomic operation triggered by webhooks
+// ============================================
+async function saveOrderAndSendEmail(orderData: {
+  orderNumber?: string;
+  customerName: string;
+  customerEmail: string;
+  products: any[];
+  totalPrice: number;
+  paymentMethod: 'Stripe' | 'PayPal';
+  paymentStatus: string;
+  address?: string;
+  city?: string;
+  postalCode?: string;
+  country?: string;
+}) {
+  try {
+    const supabase = getSupabaseClient();
+    
+    // Generate order number if not provided
+    const orderNumber = orderData.orderNumber || generateOrderNumber();
+    
+    console.log(`💾 Saving order ${orderNumber} to Postgres...`);
+    
+    // Save order to Postgres orders table
+    const { data: savedOrder, error: dbError } = await supabase
+      .from('orders')
+      .insert({
+        order_number: orderNumber,
+        customer_name: orderData.customerName,
+        customer_email: orderData.customerEmail,
+        products: orderData.products,
+        total_price: orderData.totalPrice,
+        payment_method: orderData.paymentMethod,
+        payment_status: orderData.paymentStatus,
+      })
+      .select()
+      .single();
+    
+    if (dbError) {
+      console.log(`❌ Database error saving order ${orderNumber}: ${dbError.message}`);
+      throw new Error(`Failed to save order to database: ${dbError.message}`);
+    }
+    
+    console.log(`✅ Order ${orderNumber} saved to Postgres (ID: ${savedOrder.id})`);
+    
+    // Send confirmation email
+    console.log(`📧 Sending confirmation email to ${orderData.customerEmail}...`);
+    
+    const RESEND_API_KEY = await getConfigValue("RESEND_API_KEY", "resend_api_key");
+    if (!RESEND_API_KEY) {
+      console.log(`⚠️  Email skipped for order ${orderNumber}: RESEND_API_KEY not configured`);
+      return { success: true, order: savedOrder, emailSent: false };
+    }
+    
+    const emailHtml = generateOrderConfirmationEmail({
+      orderNumber,
+      items: orderData.products,
+      total: orderData.totalPrice,
+      customerName: orderData.customerName,
+      email: orderData.customerEmail,
+      address: orderData.address,
+      city: orderData.city,
+      postalCode: orderData.postalCode,
+      country: orderData.country,
+    });
+    
+    const emailResponse = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "VSkin <onboarding@resend.dev>",
+        to: [orderData.customerEmail],
+        subject: `Order Confirmation - VSkin (#${orderNumber})`,
+        html: emailHtml,
+      }),
+    });
+    
+    const emailData = await emailResponse.json();
+    
+    if (!emailResponse.ok) {
+      console.log(`⚠️  Email failed for order ${orderNumber}: ${emailData.message || emailData.error}`);
+      return { success: true, order: savedOrder, emailSent: false };
+    }
+    
+    console.log(`✅ Confirmation email sent to ${orderData.customerEmail} (Email ID: ${emailData.id})`);
+    
+    return { success: true, order: savedOrder, emailSent: true, emailId: emailData.id };
+  } catch (error: any) {
+    console.log(`❌ Error in saveOrderAndSendEmail: ${error.message}`);
+    throw error;
+  }
 }
 
 // ============================================
@@ -254,6 +377,26 @@ app.post("/make-server-af749b27/payments/paypal/capture-order", async (c) => {
 // ORDER MANAGEMENT ROUTES
 // ============================================
 
+// Store cart data for webhook access
+app.post("/make-server-af749b27/store-cart-data", async (c) => {
+  try {
+    const { paymentId, provider, ...cartData } = await c.req.json();
+    
+    if (!paymentId || !provider) {
+      return c.json({ error: "Missing paymentId or provider" }, 400);
+    }
+    
+    const key = `${provider}_cart:${paymentId}`;
+    await kv.set(key, cartData);
+    
+    console.log(`📦 Cart data stored for ${provider} payment ${paymentId}`);
+    return c.json({ success: true });
+  } catch (error) {
+    console.log(`Error storing cart data: ${error}`);
+    return c.json({ error: "Failed to store cart data" }, 500);
+  }
+});
+
 // Create/save order
 app.post("/make-server-af749b27/orders", async (c) => {
   try {
@@ -408,6 +551,265 @@ app.post("/make-server-af749b27/send-order-confirmation", async (c) => {
       error: error.message || "Internal server error while sending email",
       success: false
     }, 500);
+  }
+});
+
+// ============================================
+// WEBHOOK HANDLERS - AUTOMATIC ORDER CREATION
+// ============================================
+
+// Stripe Webhook - Automatically save orders when payment succeeds
+app.post("/make-server-af749b27/webhooks/stripe", async (c) => {
+  try {
+    console.log("🔔 Stripe webhook received");
+    
+    const body = await c.req.text();
+    const signature = c.req.header("stripe-signature");
+    
+    if (!signature) {
+      console.log("❌ Stripe webhook rejected: Missing signature");
+      return c.json({ error: "Missing signature" }, 400);
+    }
+    
+    // Get webhook secret for signature verification
+    const STRIPE_WEBHOOK_SECRET = await getConfigValue("STRIPE_WEBHOOK_SECRET", "stripe_webhook_secret");
+    const STRIPE_SECRET_KEY = await getConfigValue("STRIPE_SECRET_KEY", "stripe_secret_key");
+    
+    if (!STRIPE_WEBHOOK_SECRET || !STRIPE_SECRET_KEY) {
+      console.log("❌ Stripe webhook configuration missing");
+      return c.json({ error: "Webhook not configured" }, 500);
+    }
+    
+    // Verify webhook signature
+    let event;
+    try {
+      // Construct the event using Stripe's verification
+      // Parse timestamp and signatures from header
+      const parts = signature.split(',');
+      const timestamp = parts.find(p => p.startsWith('t='))?.substring(2);
+      const sig = parts.find(p => p.startsWith('v1='))?.substring(3);
+      
+      if (!timestamp || !sig) {
+        throw new Error("Invalid signature format");
+      }
+      
+      // Construct signed payload
+      const signedPayload = `${timestamp}.${body}`;
+      
+      // Compute HMAC with webhook secret
+      const encoder = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(STRIPE_WEBHOOK_SECRET),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"]
+      );
+      const signatureBytes = await crypto.subtle.sign(
+        "HMAC",
+        key,
+        encoder.encode(signedPayload)
+      );
+      
+      // Convert to hex string
+      const expectedSignature = Array.from(new Uint8Array(signatureBytes))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+      
+      // Compare signatures
+      if (expectedSignature !== sig) {
+        console.log("❌ Stripe webhook rejected: Invalid signature");
+        return c.json({ error: "Invalid signature" }, 401);
+      }
+      
+      console.log("✅ Stripe webhook signature verified");
+      
+      // Parse the verified event
+      event = JSON.parse(body);
+    } catch (err: any) {
+      console.log(`❌ Stripe webhook signature verification failed: ${err.message}`);
+      return c.json({ error: "Invalid signature" }, 401);
+    }
+    
+    // Handle payment_intent.succeeded event
+    if (event.type === "payment_intent.succeeded") {
+      const paymentIntent = event.data.object;
+      
+      console.log(`💳 Stripe payment succeeded: ${paymentIntent.id}`);
+      console.log(`Amount: €${(paymentIntent.amount / 100).toFixed(2)}`);
+      console.log(`Customer email: ${paymentIntent.metadata?.customerEmail || 'N/A'}`);
+      
+      // Extract order data from payment intent metadata
+      // Note: Frontend should store cart data in KV store with payment intent ID as key
+      const cartDataKey = `stripe_cart:${paymentIntent.id}`;
+      const cartData = await kv.get(cartDataKey) as any;
+      
+      if (!cartData) {
+        console.log(`⚠️  No cart data found for payment intent ${paymentIntent.id}`);
+        console.log(`⚠️  Order will need to be created manually from Stripe dashboard`);
+        return c.json({ received: true, warning: "No cart data found" });
+      }
+      
+      // Save order to Postgres and send email atomically
+      const result = await saveOrderAndSendEmail({
+        customerName: cartData.customerName || "Stripe Customer",
+        customerEmail: paymentIntent.metadata?.customerEmail || cartData.customerEmail || "unknown@email.com",
+        products: cartData.items || [],
+        totalPrice: paymentIntent.amount / 100, // Convert from cents
+        paymentMethod: "Stripe",
+        paymentStatus: "completed",
+        address: cartData.address,
+        city: cartData.city,
+        postalCode: cartData.postalCode,
+        country: cartData.country,
+      });
+      
+      console.log(`✅ Stripe webhook processed successfully: Order ${result.order.order_number} created`);
+      
+      // Clean up cart data from KV store
+      await kv.del(cartDataKey);
+      
+      return c.json({ 
+        received: true, 
+        orderNumber: result.order.order_number,
+        emailSent: result.emailSent 
+      });
+    }
+    
+    // For other event types, just acknowledge receipt
+    console.log(`ℹ️  Stripe webhook event type ${event.type} received (not processed)`);
+    return c.json({ received: true });
+    
+  } catch (error: any) {
+    console.log(`❌ Error processing Stripe webhook: ${error.message}`);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// PayPal Webhook - Automatically save orders when payment is captured
+app.post("/make-server-af749b27/webhooks/paypal", async (c) => {
+  try {
+    console.log("🔔 PayPal webhook received");
+    
+    const rawBody = await c.req.text();
+    let body;
+    try {
+      body = JSON.parse(rawBody);
+    } catch (err) {
+      console.log("❌ PayPal webhook rejected: Invalid JSON");
+      return c.json({ error: "Invalid payload" }, 400);
+    }
+    
+    const eventType = body.event_type;
+    console.log(`PayPal event type: ${eventType}`);
+    
+    // Get PayPal webhook verification credentials
+    const PAYPAL_WEBHOOK_ID = await getConfigValue("PAYPAL_WEBHOOK_ID", "paypal_webhook_id");
+    
+    if (!PAYPAL_WEBHOOK_ID) {
+      console.log("❌ PayPal webhook configuration missing: PAYPAL_WEBHOOK_ID not set");
+      return c.json({ error: "Webhook not configured" }, 500);
+    }
+    
+    // Verify webhook signature using PayPal's verification API
+    try {
+      const { accessToken, baseURL } = await getPayPalAccessToken();
+      
+      // Extract webhook headers for verification
+      const transmissionId = c.req.header("paypal-transmission-id");
+      const transmissionTime = c.req.header("paypal-transmission-time");
+      const transmissionSig = c.req.header("paypal-transmission-sig");
+      const certUrl = c.req.header("paypal-cert-url");
+      const authAlgo = c.req.header("paypal-auth-algo");
+      
+      if (!transmissionId || !transmissionTime || !transmissionSig) {
+        console.log("❌ PayPal webhook rejected: Missing verification headers");
+        return c.json({ error: "Missing verification headers" }, 400);
+      }
+      
+      // Call PayPal's webhook verification endpoint
+      const verifyResponse = await fetch(`${baseURL}/v1/notifications/verify-webhook-signature`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          transmission_id: transmissionId,
+          transmission_time: transmissionTime,
+          cert_url: certUrl,
+          auth_algo: authAlgo,
+          transmission_sig: transmissionSig,
+          webhook_id: PAYPAL_WEBHOOK_ID,
+          webhook_event: body,
+        }),
+      });
+      
+      const verifyData = await verifyResponse.json();
+      
+      if (!verifyResponse.ok || verifyData.verification_status !== "SUCCESS") {
+        console.log(`❌ PayPal webhook verification failed: ${verifyData.verification_status || 'UNKNOWN'}`);
+        return c.json({ error: "Webhook verification failed" }, 401);
+      }
+      
+      console.log("✅ PayPal webhook signature verified");
+    } catch (err: any) {
+      console.log(`❌ PayPal webhook verification error: ${err.message}`);
+      return c.json({ error: "Verification failed" }, 401);
+    }
+    
+    // Handle PAYMENT.CAPTURE.COMPLETED event
+    if (eventType === "PAYMENT.CAPTURE.COMPLETED") {
+      const resource = body.resource;
+      const orderId = resource.supplementary_data?.related_ids?.order_id || resource.id;
+      
+      console.log(`💳 PayPal payment captured: ${resource.id}`);
+      console.log(`Amount: ${resource.amount.currency_code} ${resource.amount.value}`);
+      
+      // Extract order data from KV store
+      // Note: Frontend should store cart data with PayPal order ID as key
+      const cartDataKey = `paypal_cart:${orderId}`;
+      const cartData = await kv.get(cartDataKey) as any;
+      
+      if (!cartData) {
+        console.log(`⚠️  No cart data found for PayPal order ${orderId}`);
+        console.log(`⚠️  Order will need to be created manually from PayPal dashboard`);
+        return c.json({ received: true, warning: "No cart data found" });
+      }
+      
+      // Save order to Postgres and send email atomically
+      const result = await saveOrderAndSendEmail({
+        customerName: cartData.customerName || resource.payer?.name?.given_name + " " + resource.payer?.name?.surname || "PayPal Customer",
+        customerEmail: resource.payer?.email_address || cartData.customerEmail || "unknown@email.com",
+        products: cartData.items || [],
+        totalPrice: parseFloat(resource.amount.value),
+        paymentMethod: "PayPal",
+        paymentStatus: "completed",
+        address: cartData.address,
+        city: cartData.city,
+        postalCode: cartData.postalCode,
+        country: cartData.country,
+      });
+      
+      console.log(`✅ PayPal webhook processed successfully: Order ${result.order.order_number} created`);
+      
+      // Clean up cart data from KV store
+      await kv.del(cartDataKey);
+      
+      return c.json({ 
+        received: true, 
+        orderNumber: result.order.order_number,
+        emailSent: result.emailSent 
+      });
+    }
+    
+    // For other event types, just acknowledge receipt
+    console.log(`ℹ️  PayPal webhook event type ${eventType} received (not processed)`);
+    return c.json({ received: true });
+    
+  } catch (error: any) {
+    console.log(`❌ Error processing PayPal webhook: ${error.message}`);
+    return c.json({ error: error.message }, 500);
   }
 });
 

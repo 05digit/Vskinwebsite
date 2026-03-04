@@ -247,6 +247,34 @@ export function CheckoutPage() {
         throw new Error(data.error || 'Failed to create payment intent');
       }
 
+      // Store cart data in KV for webhook to access
+      await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/store-cart-data`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${publicAnonKey}`,
+          },
+          body: JSON.stringify({
+            paymentId: data.paymentIntentId,
+            provider: 'stripe',
+            customerName: `${customerInfo.firstName} ${customerInfo.lastName}`,
+            customerEmail: customerInfo.email,
+            items: items.map(item => ({
+              name: item.name,
+              quantity: item.quantity,
+              price: item.price * item.quantity,
+            })),
+            totalPrice: totalPrice,
+            address: customerInfo.address,
+            city: customerInfo.city,
+            postalCode: customerInfo.postalCode,
+            country: customerInfo.country,
+          }),
+        }
+      );
+
       // Confirm payment
       const { error, paymentIntent } = await stripe.confirmCardPayment(data.clientSecret, {
         payment_method: {
@@ -325,6 +353,35 @@ export function CheckoutPage() {
           if (!response.ok) {
             throw new Error(data.error || 'Failed to create PayPal order');
           }
+
+          // Store cart data in KV for webhook to access
+          const info = customerInfoRef.current;
+          await fetch(
+            `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/store-cart-data`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${publicAnonKey}`,
+              },
+              body: JSON.stringify({
+                paymentId: data.orderId,
+                provider: 'paypal',
+                customerName: `${info.firstName} ${info.lastName}`,
+                customerEmail: info.email,
+                items: items.map(item => ({
+                  name: item.name,
+                  quantity: item.quantity,
+                  price: item.price * item.quantity,
+                })),
+                totalPrice: totalPrice,
+                address: info.address,
+                city: info.city,
+                postalCode: info.postalCode,
+                country: info.country,
+              }),
+            }
+          );
 
           return data.orderId;
         } catch (error: any) {
