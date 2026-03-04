@@ -2,6 +2,7 @@ import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
 import * as kv from "./kv_store.tsx";
+import { generateOrderConfirmationEmail } from "./email-template.tsx";
 const app = new Hono();
 
 // Enable logger
@@ -320,6 +321,93 @@ app.get("/make-server-af749b27/orders/:orderId", async (c) => {
   } catch (error) {
     console.log(`Error retrieving order: ${error}`);
     return c.json({ error: "Failed to retrieve order" }, 500);
+  }
+});
+
+// ============================================
+// EMAIL SENDING ROUTE - ORDER CONFIRMATION
+// ============================================
+
+// Send order confirmation email via Resend
+app.post("/make-server-af749b27/send-order-confirmation", async (c) => {
+  try {
+    const orderDetails = await c.req.json();
+
+    // Validate required fields
+    if (!orderDetails.orderNumber || !orderDetails.email || !orderDetails.items) {
+      console.log("Order confirmation email failed: Missing required fields");
+      return c.json({ error: "Missing required fields: orderNumber, email, items" }, 400);
+    }
+
+    // Get Resend API key from environment
+    const RESEND_API_KEY = await getConfigValue("RESEND_API_KEY", "resend_api_key");
+    if (!RESEND_API_KEY) {
+      console.log("Order confirmation email failed: Missing RESEND_API_KEY environment variable");
+      return c.json({ 
+        error: "Email service not configured. Please add your Resend API key.",
+        success: false
+      }, 500);
+    }
+
+    // Generate HTML email content
+    const emailHtml = generateOrderConfirmationEmail({
+      orderNumber: orderDetails.orderNumber,
+      items: orderDetails.items,
+      total: orderDetails.total,
+      customerName: orderDetails.customerName,
+      email: orderDetails.email,
+      address: orderDetails.address,
+      city: orderDetails.city,
+      postalCode: orderDetails.postalCode,
+      country: orderDetails.country,
+    });
+
+    // Send email via Resend API
+    // NOTE: To send emails to customers, you must verify a domain at https://resend.com/domains
+    // OR verify individual sender addresses at https://resend.com/emails
+    const fromEmail = "VSkin <onboarding@resend.dev>";
+    
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: fromEmail,
+        to: [orderDetails.email],
+        subject: `Order Confirmation - VSkin (#${orderDetails.orderNumber})`,
+        html: emailHtml,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      const errorMsg = data.message || data.error || JSON.stringify(data);
+      console.log(`⚠️  Resend email send failed (${response.status}): ${errorMsg}`);
+      
+      // Don't fail the order if email fails - just log it
+      console.log("ℹ️  Order was processed successfully, but confirmation email failed to send");
+      return c.json({ 
+        success: true, 
+        emailFailed: true,
+        message: "Order processed successfully, but confirmation email could not be sent" 
+      });
+    }
+
+    console.log(`✅ Order confirmation email sent successfully to ${orderDetails.email} (Email ID: ${data.id})`);
+    return c.json({ 
+      success: true, 
+      emailId: data.id,
+      message: "Order confirmation email sent successfully" 
+    });
+  } catch (error: any) {
+    console.log(`Error sending order confirmation email: ${error}`);
+    return c.json({ 
+      error: error.message || "Internal server error while sending email",
+      success: false
+    }, 500);
   }
 });
 

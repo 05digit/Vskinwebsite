@@ -1,0 +1,9 @@
+# VSkin - Luxury Skincare
+User-agent: *
+Allow: /
+
+# Disallow checkout and success pages from indexing
+Disallow: /checkout
+Disallow: /order-success
+
+Sitemap: https://vskin.com/sitemap.xml

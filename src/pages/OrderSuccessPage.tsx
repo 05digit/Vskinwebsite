@@ -2,11 +2,24 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { CheckCircle2, Package, Mail, ArrowRight } from 'lucide-react';
 import { motion } from 'motion/react';
+import { useCart } from '../context/CartContext';
 
 export function OrderSuccessPage() {
   const [searchParams] = useSearchParams();
   const orderId = searchParams.get('orderId');
   const [showConfetti, setShowConfetti] = useState(true);
+  const { clearCart } = useCart();
+
+  // Generate consistent order number from payment ID
+  // For Stripe: payment intent ID (pi_xxx) -> extract last 8 chars
+  // For PayPal: order ID -> extract last 8 chars
+  const orderNumber = orderId ? orderId.replace('pi_', '').slice(-8).toUpperCase() : 'N/A';
+
+  useEffect(() => {
+    // Clear the cart when landing on success page
+    clearCart();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount
 
   useEffect(() => {
     // Hide confetti after animation
@@ -109,7 +122,7 @@ export function OrderSuccessPage() {
               className="bg-cream border border-sand p-6 mb-12 inline-block"
             >
               <p className="text-sm text-brown mb-2">Order Number</p>
-              <p className="text-brown-dark font-mono text-sm break-all">{orderId}</p>
+              <p className="text-brown-dark font-mono text-sm break-all">#{orderNumber}</p>
             </motion.div>
           )}
 

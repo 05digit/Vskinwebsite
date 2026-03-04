@@ -6,6 +6,7 @@ import { toast } from 'sonner@2.0.3';
 import { CreditCard, ShoppingBag, Lock, Mail, User, MapPin, Phone } from 'lucide-react';
 import { motion } from 'motion/react';
 import { projectId, publicAnonKey } from '../utils/supabase/info';
+import { CountrySelect } from '../components/CountrySelect';
 
 declare global {
   interface Window {
@@ -32,7 +33,7 @@ export function CheckoutPage() {
     address: '',
     city: '',
     postalCode: '',
-    country: 'Ireland',
+    country: 'Lithuania',
     phone: '',
   });
 
@@ -183,6 +184,11 @@ export function CheckoutPage() {
       return false;
     }
 
+    if (!customerInfo.address || !customerInfo.city || !customerInfo.postalCode || !customerInfo.country) {
+      toast.error('Please fill in your complete shipping address');
+      return false;
+    }
+
     return true;
   };
 
@@ -196,6 +202,10 @@ export function CheckoutPage() {
     }
     if (!info.email.includes('@')) {
       toast.error('Please enter a valid email address');
+      return false;
+    }
+    if (!info.address || !info.city || !info.postalCode || !info.country) {
+      toast.error('Please fill in your complete shipping address');
       return false;
     }
     return true;
@@ -259,10 +269,11 @@ export function CheckoutPage() {
       }
 
       if (paymentIntent.status === 'succeeded') {
-        await saveOrder(paymentIntent.id, 'stripe');
+        const orderData = await saveOrder(paymentIntent.id, 'stripe');
         toast.success('Payment successful!');
-        clearCart();
-        navigate(`/order-success?orderId=${paymentIntent.id}`);
+        // Use the server-generated order ID for consistency
+        const orderNumber = orderData?.orderId || paymentIntent.id;
+        navigate(`/order-success?orderId=${orderNumber}`);
       }
     } catch (error: any) {
       console.error('Stripe payment error:', error);
@@ -345,10 +356,11 @@ export function CheckoutPage() {
             throw new Error(captureData.error || 'Failed to capture PayPal payment');
           }
 
-          await saveOrder(data.orderID, 'paypal');
+          const orderData = await saveOrder(data.orderID, 'paypal');
           toast.success('Payment successful!');
-          clearCart();
-          navigate(`/order-success?orderId=${data.orderID}`);
+          // Use the server-generated order ID for consistency
+          const orderNumber = orderData?.orderId || data.orderID;
+          navigate(`/order-success?orderId=${orderNumber}`);
         } catch (error: any) {
           console.error('PayPal capture error:', error);
           toast.error(error.message || 'Payment failed. Please try again.');
@@ -399,8 +411,67 @@ export function CheckoutPage() {
       if (!response.ok) {
         console.error('Failed to save order');
       }
+
+      const orderData = await response.json();
+      
+      // Send order confirmation email
+      await sendOrderConfirmationEmail(orderData.orderId || paymentId);
+      return orderData;
     } catch (error) {
       console.error('Error saving order:', error);
+    }
+  };
+
+  const sendOrderConfirmationEmail = async (orderId: string) => {
+    try {
+      // Generate consistent order number from orderId
+      // For Stripe: payment intent ID (pi_xxx) -> extract last 8 chars
+      // For PayPal: order ID -> extract last 8 chars
+      const orderNumber = orderId.replace('pi_', '').slice(-8).toUpperCase();
+
+      const emailResponse = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/send-order-confirmation`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${publicAnonKey}`,
+          },
+          body: JSON.stringify({
+            orderNumber,
+            email: customerInfo.email,
+            customerName: `${customerInfo.firstName} ${customerInfo.lastName}`,
+            address: customerInfo.address || 'N/A',
+            city: customerInfo.city || 'N/A',
+            postalCode: customerInfo.postalCode || 'N/A',
+            country: customerInfo.country || 'Ireland',
+            items: items.map(item => ({
+              name: item.name,
+              quantity: item.quantity,
+              price: item.price * item.quantity,
+            })),
+            total: totalPrice,
+          }),
+        }
+      );
+
+      if (emailResponse.ok) {
+        const emailData = await emailResponse.json();
+        if (emailData.emailSkipped) {
+          console.log('ℹ️  Email sending skipped - domain verification required');
+        } else if (emailData.emailFailed) {
+          console.log('⚠️  Order confirmed but email failed to send');
+        } else {
+          console.log('✅ Order confirmation email sent successfully:', emailData.emailId);
+        }
+      } else {
+        const errorData = await emailResponse.json();
+        console.log('⚠️  Email sending failed:', errorData.error || 'Unknown error');
+        // Don't throw error - email failure shouldn't break the order flow
+      }
+    } catch (error) {
+      console.log('⚠️  Error with email service:', error);
+      // Don't throw error - email failure shouldn't break the order flow
     }
   };
 
@@ -495,45 +566,57 @@ export function CheckoutPage() {
                     value={customerInfo.phone}
                     onChange={(e) => setCustomerInfo({ ...customerInfo, phone: e.target.value })}
                     className="w-full px-4 py-3 border border-sand focus:border-brown focus:outline-none transition-colors"
-                    placeholder="+353 1 234 5678"
+                    placeholder="+370 600 12345"
                   />
                 </div>
 
                 <div>
                   <label className="block text-sm text-brown mb-2 flex items-center gap-2">
                     <MapPin className="w-4 h-4" />
-                    Address
+                    Address *
                   </label>
                   <input
                     type="text"
+                    required
                     value={customerInfo.address}
                     onChange={(e) => setCustomerInfo({ ...customerInfo, address: e.target.value })}
                     className="w-full px-4 py-3 border border-sand focus:border-brown focus:outline-none transition-colors"
-                    placeholder="123 Main Street"
+                    placeholder="Gedimino pr. 10"
                   />
                 </div>
 
                 <div className="grid sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm text-brown mb-2">City</label>
+                    <label className="block text-sm text-brown mb-2">City *</label>
                     <input
                       type="text"
+                      required
                       value={customerInfo.city}
                       onChange={(e) => setCustomerInfo({ ...customerInfo, city: e.target.value })}
                       className="w-full px-4 py-3 border border-sand focus:border-brown focus:outline-none transition-colors"
-                      placeholder="Dublin"
+                      placeholder="Vilnius"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-brown mb-2">Postal Code</label>
+                    <label className="block text-sm text-brown mb-2">Postal Code *</label>
                     <input
                       type="text"
+                      required
                       value={customerInfo.postalCode}
                       onChange={(e) => setCustomerInfo({ ...customerInfo, postalCode: e.target.value })}
                       className="w-full px-4 py-3 border border-sand focus:border-brown focus:outline-none transition-colors"
-                      placeholder="D02 X285"
+                      placeholder="LT-01234"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-brown mb-2">Country *</label>
+                  <CountrySelect
+                    required
+                    value={customerInfo.country}
+                    onChange={(value) => setCustomerInfo({ ...customerInfo, country: value })}
+                  />
                 </div>
               </div>
             </motion.div>

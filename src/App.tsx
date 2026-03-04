@@ -8,6 +8,7 @@ import { FloatingCart } from './components/FloatingCart';
 import { CartDrawer } from './components/CartDrawer';
 import { PageTransition } from './components/PageTransition';
 import { ScrollToTop } from './components/ScrollToTop';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { CartProvider } from './context/CartContext';
 import { HomePage } from './pages/HomePage';
 import { ShopPage } from './pages/ShopPage';
@@ -16,8 +17,10 @@ import { AboutPage } from './pages/AboutPage';
 import { IngredientsPage } from './pages/IngredientsPage';
 import { ReturnsPage } from './pages/ReturnsPage';
 import { PrivacyPage } from './pages/PrivacyPage';
+import { TermsPage } from './pages/TermsPage';
 import { CheckoutPage } from './pages/CheckoutPage';
 import { OrderSuccessPage } from './pages/OrderSuccessPage';
+import { NotFoundPage } from './pages/NotFoundPage';
 
 function AnimatedRoutes() {
   const location = useLocation();
@@ -32,8 +35,10 @@ function AnimatedRoutes() {
         <Route path="/ingredients" element={<PageTransition><IngredientsPage /></PageTransition>} />
         <Route path="/returns" element={<PageTransition><ReturnsPage /></PageTransition>} />
         <Route path="/privacy" element={<PageTransition><PrivacyPage /></PageTransition>} />
+        <Route path="/terms" element={<PageTransition><TermsPage /></PageTransition>} />
         <Route path="/checkout" element={<PageTransition><CheckoutPage /></PageTransition>} />
         <Route path="/order-success" element={<PageTransition><OrderSuccessPage /></PageTransition>} />
+        <Route path="*" element={<PageTransition><NotFoundPage /></PageTransition>} />
       </Routes>
     </AnimatePresence>
   );
@@ -61,10 +66,12 @@ function AppContent() {
 
 export default function App() {
   return (
-    <CartProvider>
-      <Router>
-        <AppContent />
-      </Router>
-    </CartProvider>
+    <ErrorBoundary>
+      <CartProvider>
+        <Router>
+          <AppContent />
+        </Router>
+      </CartProvider>
+    </ErrorBoundary>
   );
 }
