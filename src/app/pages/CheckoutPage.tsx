@@ -24,6 +24,7 @@ export function CheckoutPage() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('stripe');
   const [isProcessing, setIsProcessing] = useState(false);
   const [stripeLoaded, setStripeLoaded] = useState(false);
+  const [paymentSuccessful, setPaymentSuccessful] = useState(false);
   
   // Customer information
   const [customerInfo, setCustomerInfo] = useState({
@@ -64,12 +65,12 @@ export function CheckoutPage() {
       });
   }, []);
 
-  // Redirect if cart is empty
+  // Redirect if cart is empty (but not if payment was successful)
   useEffect(() => {
-    if (items.length === 0) {
+    if (items.length === 0 && !paymentSuccessful) {
       navigate('/shop');
     }
-  }, [items, navigate]);
+  }, [items, navigate, paymentSuccessful]);
 
   // Load Stripe
   useEffect(() => {
@@ -248,7 +249,7 @@ export function CheckoutPage() {
       }
 
       // Store cart data in KV for webhook to access
-      await fetch(
+      const storeCartResponse = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/store-cart-data`,
         {
           method: 'POST',
@@ -275,6 +276,15 @@ export function CheckoutPage() {
         }
       );
 
+      if (!storeCartResponse.ok) {
+        const errorData = await storeCartResponse.json();
+        console.error('❌ Failed to store cart data for Stripe:', errorData);
+        // Don't throw - allow payment to continue even if cart storage fails
+        // The webhook might still work, or we can handle this as a fallback case
+      } else {
+        console.log('✅ Stripe cart data stored successfully for payment intent:', data.paymentIntentId);
+      }
+
       // Confirm payment
       const { error, paymentIntent } = await stripe.confirmCardPayment(data.clientSecret, {
         payment_method: {
@@ -297,9 +307,61 @@ export function CheckoutPage() {
       }
 
       if (paymentIntent.status === 'succeeded') {
+        // Mark payment as successful to prevent redirect when cart is cleared
+        setPaymentSuccessful(true);
+        
         // Webhook will handle order creation and email sending
         toast.success('Payment successful!');
         clearCart();
+        
+        // Give webhook 3 seconds to fire, then create order as fallback
+        setTimeout(async () => {
+          try {
+            // Check if webhook already created the order
+            const checkResponse = await fetch(
+              `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/order-number/${paymentIntent.id}`,
+              { headers: { 'Authorization': `Bearer ${publicAnonKey}` } }
+            );
+            const checkData = await checkResponse.json();
+            
+            // If webhook is still pending after 3 seconds, create order manually
+            if (checkData.isWebhookPending) {
+              console.log('⚠️ Webhook did not fire, creating order manually as fallback');
+              
+              await fetch(
+                `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/orders`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${publicAnonKey}`,
+                  },
+                  body: JSON.stringify({
+                    paymentId: paymentIntent.id,
+                    customerName: `${customerInfo.firstName} ${customerInfo.lastName}`,
+                    customerEmail: customerInfo.email,
+                    items: items.map(item => ({
+                      name: item.name,
+                      quantity: item.quantity,
+                      price: item.price * item.quantity,
+                    })),
+                    totalPrice: totalPrice,
+                    paymentMethod: 'Stripe',
+                    address: customerInfo.address,
+                    city: customerInfo.city,
+                    postalCode: customerInfo.postalCode,
+                    country: customerInfo.country,
+                  }),
+                }
+              );
+              
+              console.log('✅ Fallback order created successfully');
+            }
+          } catch (error) {
+            console.error('Error in fallback order creation:', error);
+          }
+        }, 3000);
+        
         navigate(`/order-success?orderId=${paymentIntent.id}`);
       }
     } catch (error: any) {
@@ -355,7 +417,7 @@ export function CheckoutPage() {
 
           // Store cart data in KV for webhook to access
           const info = customerInfoRef.current;
-          await fetch(
+          const storeCartResponse = await fetch(
             `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/store-cart-data`,
             {
               method: 'POST',
@@ -381,6 +443,14 @@ export function CheckoutPage() {
               }),
             }
           );
+
+          if (!storeCartResponse.ok) {
+            const errorData = await storeCartResponse.json();
+            console.error('❌ Failed to store cart data for PayPal:', errorData);
+            // Don't throw - allow payment to continue
+          } else {
+            console.log('✅ PayPal cart data stored successfully for order:', data.orderId);
+          }
 
           return data.orderId;
         } catch (error: any) {
@@ -415,6 +485,56 @@ export function CheckoutPage() {
           // Webhook will handle order creation and email sending
           // Clear cart and use window.location for reliable redirect with PayPal
           clearCart();
+          
+          // Give webhook 3 seconds to fire, then create order as fallback
+          setTimeout(async () => {
+            try {
+              // Check if webhook already created the order
+              const info = customerInfoRef.current;
+              const checkResponse = await fetch(
+                `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/order-number/${data.orderID}`,
+                { headers: { 'Authorization': `Bearer ${publicAnonKey}` } }
+              );
+              const checkData = await checkResponse.json();
+              
+              // If webhook is still pending after 3 seconds, create order manually
+              if (checkData.isWebhookPending) {
+                console.log('⚠️ PayPal webhook did not fire, creating order manually as fallback');
+                
+                await fetch(
+                  `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/orders`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${publicAnonKey}`,
+                    },
+                    body: JSON.stringify({
+                      paymentId: data.orderID,
+                      customerName: `${info.firstName} ${info.lastName}`,
+                      customerEmail: info.email,
+                      items: items.map(item => ({
+                        name: item.name,
+                        quantity: item.quantity,
+                        price: item.price * item.quantity,
+                      })),
+                      totalPrice: totalPrice,
+                      paymentMethod: 'PayPal',
+                      address: info.address,
+                      city: info.city,
+                      postalCode: info.postalCode,
+                      country: info.country,
+                    }),
+                  }
+                );
+                
+                console.log('✅ PayPal fallback order created successfully');
+              }
+            } catch (error) {
+              console.error('Error in PayPal fallback order creation:', error);
+            }
+          }, 3000);
+          
           window.location.href = `/order-success?orderId=${data.orderID}`;
         } catch (error: any) {
           console.error('PayPal capture error:', error);

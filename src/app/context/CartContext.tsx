@@ -67,7 +67,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
   const clearCart = () => {
     setItems([]);
-    toast.success('Cart cleared');
+    // Removed toast to avoid spam when clearing cart after successful payment
   };
 
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);

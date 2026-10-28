@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { CheckCircle2, Package, Mail, ArrowRight } from 'lucide-react';
 import { motion } from 'motion/react';
-import { useCart } from '../context/CartContext';
 import { projectId, publicAnonKey } from '../utils/supabase/info';
 
 export function OrderSuccessPage() {
@@ -11,13 +10,9 @@ export function OrderSuccessPage() {
   const [showConfetti, setShowConfetti] = useState(true);
   const [orderNumber, setOrderNumber] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
-  const { clearCart } = useCart();
+  const [webhookTimedOut, setWebhookTimedOut] = useState(false);
 
-  useEffect(() => {
-    // Clear the cart when landing on success page
-    clearCart();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run once on mount
+  // Removed clearCart() - cart is already cleared in CheckoutPage before navigation
 
   // Fetch the real order number from the webhook
   useEffect(() => {
@@ -26,8 +21,15 @@ export function OrderSuccessPage() {
       return;
     }
 
+    let attempts = 0;
+    const maxAttempts = 10; // Try for up to 20 seconds (10 attempts * 2 seconds)
+
     const fetchOrderNumber = async () => {
+      attempts++;
+      
       try {
+        console.log(`[OrderSuccess] Fetching order number for payment ID: ${orderId} (attempt ${attempts})`);
+        
         const response = await fetch(
           `https://${projectId}.supabase.co/functions/v1/make-server-af749b27/order-number/${orderId}`,
           {
@@ -39,21 +41,38 @@ export function OrderSuccessPage() {
 
         if (response.ok) {
           const data = await response.json();
+          console.log(`[OrderSuccess] API response:`, data);
+          
+          // Always set the order number (either fallback or real)
           setOrderNumber(data.orderNumber);
           
-          // If webhook is still pending, poll again after a short delay
-          if (data.isWebhookPending) {
+          // If webhook is still pending and we haven't exceeded max attempts, poll again
+          if (data.isWebhookPending && attempts < maxAttempts) {
+            console.log(`[OrderSuccess] Webhook still pending, will retry in 2 seconds...`);
             setTimeout(fetchOrderNumber, 2000);
+          } else {
+            // Stop polling - either we got the real number or exceeded max attempts
+            setIsLoading(false);
+            
+            if (data.isWebhookPending) {
+              console.warn(`[OrderSuccess] Max polling attempts reached. Displaying fallback order number.`);
+              setWebhookTimedOut(true);
+            } else {
+              console.log(`[OrderSuccess] Real order number received: ${data.orderNumber}`);
+            }
           }
         } else {
+          console.error(`[OrderSuccess] API error: ${response.status}`);
           // Fallback to derived order number if API fails
-          setOrderNumber(orderId.replace('pi_', '').slice(-8).toUpperCase());
+          const fallback = orderId.replace('pi_', '').replace('order_', '').slice(-8).toUpperCase();
+          setOrderNumber(fallback);
+          setIsLoading(false);
         }
       } catch (error) {
-        console.error('Error fetching order number:', error);
+        console.error('[OrderSuccess] Error fetching order number:', error);
         // Fallback to derived order number
-        setOrderNumber(orderId.replace('pi_', '').slice(-8).toUpperCase());
-      } finally {
+        const fallback = orderId.replace('pi_', '').replace('order_', '').slice(-8).toUpperCase();
+        setOrderNumber(fallback);
         setIsLoading(false);
       }
     };
@@ -159,10 +178,22 @@ export function OrderSuccessPage() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.6 }}
-              className="bg-cream border border-sand p-6 mb-12 inline-block"
+              className="bg-cream border border-sand p-6 mb-12 inline-block min-w-[300px]"
             >
               <p className="text-sm text-brown mb-2">Order Number</p>
-              <p className="text-brown-dark font-mono text-sm break-all">#{orderNumber}</p>
+              {isLoading ? (
+                <div className="flex items-center justify-center gap-2 text-brown-dark">
+                  <div className="w-4 h-4 border-2 border-brown border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-sm">Processing...</span>
+                </div>
+              ) : webhookTimedOut ? (
+                <div className="text-brown-dark">
+                  <p className="text-sm mb-2">Your order number will be sent to your email confirmation shortly.</p>
+                  <p className="text-xs text-brown">Please check your inbox for order details.</p>
+                </div>
+              ) : (
+                <p className="text-brown-dark font-mono text-sm break-all">#{orderNumber}</p>
+              )}
             </motion.div>
           )}
 
